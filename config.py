@@ -25,23 +25,26 @@ def _resolve_user_id():
         if arg.startswith("--user-id="):
             return arg.split("=", 1)[1]
 
-    env_id = os.environ.get("ROLL_USER_ID")
-    if env_id:
-        return env_id
+    return os.environ.get("ROLL_USER_ID")
 
-    sys.exit(
-        "No player id supplied. Pass --user-id YOUR-ID or set ROLL_USER_ID.\n"
-        "Find your id in the game's browser localStorage under 'user', or "
-        "from the /register response."
-    )
+
+def require_user_id():
+    """Call this from scripts that need an authenticated player id."""
+    if not USER_ID:
+        sys.exit(
+            "No player id supplied. Pass --user-id YOUR-ID or set ROLL_USER_ID.\n"
+            "Find your id in the game's browser localStorage under 'user', or "
+            "from the /register response."
+        )
+    return USER_ID
 
 
 USER_ID = _resolve_user_id()
 
 HEADERS = {
     "Content-Type": "application/json",
-    "Authorization": f"Bearer {USER_ID}",
+    **({"Authorization": f"Bearer {USER_ID}"} if USER_ID else {}),
 }
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
-STATE_FILE = os.path.join(os.path.dirname(__file__), f"state.{USER_ID}.json")
+STATE_FILE = os.path.join(os.path.dirname(__file__), f"state.{USER_ID or 'unknown'}.json")

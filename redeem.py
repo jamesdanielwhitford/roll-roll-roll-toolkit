@@ -11,6 +11,7 @@ Usage:
 """
 
 import argparse
+from config import require_user_id
 from api import redeem, RollAPIError
 
 
@@ -19,6 +20,7 @@ def main():
     parser.add_argument("code", help="the redemption code to submit")
     parser.add_argument("--user-id", metavar="ID", default=None, help="your player id (or set ROLL_USER_ID)")
     args = parser.parse_args()
+    require_user_id()
 
     try:
         status, data = redeem(args.code)

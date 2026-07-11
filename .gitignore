@@ -1,4 +1,5 @@
 state*.json
+farmed_accounts.json
 logs/
 __pycache__/
 *.pyc

@@ -41,8 +41,19 @@ other's stats.
   list. Manually buy one with `--contribute "Skill Up" --amount 500`.
 - `stats.py` — prints session stats (rolls, score gained, rolls/min).
 - `redeem.py CODE` — redeems a code you actually have. Does not guess codes.
+- `farm_accounts.py` — registers new accounts, keeps the ones landing on
+  a target team and discards the rest, persisting kept accounts to
+  `farmed_accounts.json`. Re-running only tops up toward `--target`
+  instead of starting over. Team assignment observed as strict
+  round-robin across the game's teams, not random.
+- `farm_roll.py` — rolls concurrently (one thread per account) for every
+  account in `farmed_accounts.json`, each on its own cooldown. Supports
+  `--auto-buy` (same ranking logic as `auto_roll.py`, applied per
+  account) and `--team` / `--exclude-user-id` filters.
 
-All scripts accept `--user-id`.
+All single-account scripts accept `--user-id`. `farm_accounts.py` needs
+no id (it registers fresh accounts); `farm_roll.py` reads ids from
+`farmed_accounts.json`.
 
 ## Example
 

@@ -14,6 +14,7 @@ This script just reports state; it does not auto-spend without --commit.
 """
 
 import argparse
+from config import require_user_id
 from api import init, contribute, RollAPIError
 from advisor import remaining, maxed_out, rank_projects
 
@@ -24,6 +25,7 @@ def main():
     parser.add_argument("--contribute", metavar="PROJECT_NAME", help="Substring match of project name to contribute to")
     parser.add_argument("--amount", type=float, help="Amount of score/gold to contribute")
     args = parser.parse_args()
+    require_user_id()
 
     _, data = init()
     player = data["player"]

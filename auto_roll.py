@@ -22,6 +22,7 @@ import time
 import sys
 from datetime import datetime
 
+from config import require_user_id
 from api import init, roll, contribute, RollAPIError
 from state import load_state, save_state, record_roll
 from advisor import rank_projects
@@ -141,6 +142,7 @@ def main():
     parser.add_argument("--auto-buy", action="store_true", help="spend score on best-value upgrades as you go")
     parser.add_argument("--log", metavar="FILE", default=None, help="append events to this log file")
     args = parser.parse_args()
+    require_user_id()
 
     log = make_logger(args.log)
     state = load_state()

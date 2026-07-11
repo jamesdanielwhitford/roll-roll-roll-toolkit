@@ -33,27 +33,19 @@ other's stats.
 
 ## Scripts
 
-- `auto_roll.py` — rolls the instant your cooldown expires, forever (or
-  `--max-rolls N` / `--duration SECONDS`). Add `--auto-buy` to also spend
-  score on the best-value upgrade after every roll, and `--log FILE` to
-  save a timestamped history.
-- `upgrades.py` — shows solo project progress and a ranked "best value"
-  list. Manually buy one with `--contribute "Skill Up" --amount 500`.
+- `auto_roll.py` — rolls shortly after your cooldown expires (a random
+  0.5-1s delay is added before each roll), forever (or `--max-rolls N` /
+  `--duration SECONDS`). Add `--auto-buy` to also spend score on the
+  cheapest available upgrade after every roll, `--donate-pct PCT`
+  (default 25) to donate a slice of earnings to the team's group project
+  once every cappable solo upgrade is maxed, and `--log FILE` to save a
+  timestamped history.
+- `upgrades.py` — shows solo project progress and the cheapest available
+  buy. Manually buy one with `--contribute "Skill Up" --amount 500`.
 - `stats.py` — prints session stats (rolls, score gained, rolls/min).
 - `redeem.py CODE` — redeems a code you actually have. Does not guess codes.
-- `farm_accounts.py` — registers new accounts, keeps the ones landing on
-  a target team and discards the rest, persisting kept accounts to
-  `farmed_accounts.json`. Re-running only tops up toward `--target`
-  instead of starting over. Team assignment observed as strict
-  round-robin across the game's teams, not random.
-- `farm_roll.py` — rolls concurrently (one thread per account) for every
-  account in `farmed_accounts.json`, each on its own cooldown. Supports
-  `--auto-buy` (same ranking logic as `auto_roll.py`, applied per
-  account) and `--team` / `--exclude-user-id` filters.
 
-All single-account scripts accept `--user-id`. `farm_accounts.py` needs
-no id (it registers fresh accounts); `farm_roll.py` reads ids from
-`farmed_accounts.json`.
+All scripts accept `--user-id`.
 
 ## Example
 
@@ -65,7 +57,8 @@ Prints a line per roll:
 
 ```
 [roll #7] dice=[2, 3] delta=+10 score=142 mult=2 dice=2 cooldown=6000ms [ok] | session: +108 in 228s (28/min)
-[auto-buy] Skill Up! for 1110 score (+50.00% rate)
+[auto-buy] Skill Up! for 1110 score
+[donate] 27.5 to Build Foundation
 ```
 
 `score`, `mult`, `dice`, and `cooldown` reflect your live upgrade level —
@@ -98,37 +91,48 @@ Solo projects let you spend your own score as "gold" for permanent
 upgrades:
 
 - **Level Up!** (+1 Die, repeatable up to 50x) — more dice per roll, but
-  also more bust exposure until you pair it with Dice Upgrade.
+  also more bust exposure, so it's only bought once every current die is
+  already upgraded, paired immediately with Dice Upgrade for the new one.
 - **Skill Up!** (+1 Multiplier, uncapped repeats) — direct multiplier
-  increase. Note: it's not yet confirmed via testing whether this also
-  raises your floor (`minMultiplier`) or only your current multiplier —
-  the model conservatively assumes the latter.
+  increase.
 - **Fast Hands** (-0.5s cooldown, max 6x) — caps at -3s off the 6s
   cooldown, up to 2x roll frequency.
 - **Weighted Die** (+1% high roll odds, max 30x) — improves average roll
-  value. Estimated conservatively; the API doesn't expose the real odds
-  table.
-- **Dice Upgrade** (removes the "1" face from one die, uncapped but
-  practically capped at once per die you own) — this is the highest-
-  leverage upgrade once your multiplier climbs meaningfully above your
-  floor, because every bust then costs more. Removing a die's 1
-  multiplies your survival odds rather than just adding to them, and
-  fully de-1'ing all your dice makes busting impossible, turning your
-  multiplier into an uncapped climb. `advisor.py` models this with a
-  Monte Carlo simulation (not a flat percentage like the others) that
-  also weights each purchase by how close it gets you to full
-  completion, since the last die fixed is worth far more than the first.
-- **Unlock Skin** — cosmetic only, excluded from the value ranking.
+  value.
+- **Dice Upgrade** (removes the "1" face from one die) — the cutoff on
+  how many dice can be de-1'd isn't simply your dice count and can
+  shift (the project can go unpurchasable in the shop below your full
+  dice count), so `advisor.py` always reads the live `maxRepeat`/
+  `timesCompleted` off this project rather than assuming a cap.
+- **Unlock Skin** — cosmetic only, never bought automatically.
 
-`advisor.py` ranks all of these by estimated score-rate increase per
-point spent, recalculated live off your current dice/multiplier/floor/
-cooldown, so it naturally accounts for diminishing (or, for Dice
-Upgrade, increasing-then-explosive) returns as you stack upgrades.
+`player["dice"]` gives exact per-die ground truth
+(`{"type": "regular"|"upgraded"}`), so `advisor.py` always knows the
+live backlog of currently-owned dice still showing a 1. While that
+backlog is nonzero and Dice Upgrade is purchasable, Dice Upgrade is
+bought on its own — fixing what you have before adding more. Level Up!
+only reappears (bundled with Dice Upgrade, bought back-to-back, priced
+as the sum of both) once every current die is already upgraded, so a
+freshly-added die is never left unprotected.
 
-There's also a **group** project ("Build Foundation") needing a large
-combined team score for a team-wide buff. A single player's rolls won't
-move it alone, coordinate with your team if you want to push it over the
-goal with `upgrades.py --contribute`.
+`advisor.py`'s `cheapest_candidate()` picks the buy for `--auto-buy`:
+of Skill Up, Weighted Die, Fast Hands, Dice Upgrade (solo, while backlog
+exists), and the Level Up + Dice Upgrade bundle (once backlog is clear),
+it always buys whichever is cheapest right now, full stop. No
+value/rate weighting. Every project's affordability is re-checked live
+each cycle, so anything maxed out or missing from the shop simply drops
+out of consideration that round.
+
+There's also a **group** project (its name has been observed to change
+over time, e.g. "Build Foundation" — found by `type == "group"`, never
+by name) needing a large combined team score for a team-wide buff. A
+single player's rolls won't move it alone, coordinate with your team if
+you want to push it over the goal with `upgrades.py --contribute`, or
+let `auto_roll.py --auto-buy` donate automatically: once Fast Hands,
+Weighted Die, Level Up, and Dice Upgrade are all maxed (Skill Up! is
+uncapped and stays the sole ongoing solo spend from then on),
+`--donate-pct` starts skimming that percentage of each roll's earnings
+into the group project, continuously, alongside normal saving.
 
 ## What this deliberately does not do
 

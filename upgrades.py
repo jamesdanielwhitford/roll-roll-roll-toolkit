@@ -1,6 +1,6 @@
 """
 Shows current solo project progress and tells you which upgrade is
-"cheapest per point of score" right now, i.e. where to spend contributions.
+cheapest to buy right now, i.e. where to spend contributions.
 
 The game exposes solo projects like:
   Level Up!    -> +1 Die            (repeatable, goal grows)
@@ -16,7 +16,7 @@ This script just reports state; it does not auto-spend without --commit.
 import argparse
 from config import require_user_id
 from api import init, contribute, RollAPIError
-from advisor import remaining, maxed_out, rank_projects
+from advisor import remaining, maxed_out, cheapest_candidate, unupgraded_dice_count
 
 
 def main():
@@ -43,11 +43,13 @@ def main():
             f"{p['timesCompleted']:>4}/{max_repeat:<5} {status}"
         )
 
-    ranked = rank_projects(projects, player)
-    if ranked:
-        print("\nBest value right now (rate increase per point spent):")
-        for value, rate, cost, p in ranked:
-            print(f"  {p['name']:<16} +{rate*100:.2f}% rate for {cost:.0f} score (value={value:.6f})")
+    backlog = unupgraded_dice_count(player)
+    print(f"\nDice: {len(player['dice'])} total, {backlog} not yet upgraded")
+
+    candidate = cheapest_candidate(projects, player)
+    if candidate is not None:
+        cost, label, _ = candidate
+        print(f"Cheapest buy right now: {label} for {cost:.0f} score")
 
     if args.contribute:
         match = [p for p in projects if args.contribute.lower() in p["name"].lower()]

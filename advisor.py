@@ -1,43 +1,47 @@
 """
-Value model for solo upgrade projects: estimates the proportional
-increase to score-per-second each project's *next* purchase would give,
-then ranks projects by (rate increase / cost) so the best-value buy is
-always obvious.
+Buy-decision model for solo upgrade projects.
 
-Effects, from the project descriptions returned by /init:
-  Level Up!     +1 Die             -> +1/current_dice_count to avg roll sum
-  Skill Up!     +1 Multiplier      -> (mult+1)/mult multiplicative increase
-  Fast Hands    -0.5s Cooldown     -> cooldown/(cooldown-500) freq increase
-  Weighted Die  +1% high-roll odds -> small flat bump, hard to quantify
-                                       precisely without the odds table,
-                                       treated as a conservative constant
-  Dice Upgrade  Remove "1" from a die -> see below, simulated
-  Unlock Skin   cosmetic           -> excluded, no effect on score rate
+Fixed strategy: of the game's four levers, buy whichever is cheapest
+right now, full stop, no value/rate weighting.
 
-Dice Upgrade is fundamentally different from the others: rolling any
-single 1 among your dice busts the roll and resets your *current*
-multiplier down to your floor (minMultiplier). Removing the 1 from a
-die means that die can never trigger a bust. Because bust probability
-is 1 - (5/6)^(dice still showing 1), each de-1'd die multiplies your
-survival odds rather than adding to them - and the higher your current
-multiplier climbs above your floor, the more a bust costs you, so this
-upgrade's value is state-dependent (rises as your multiplier pulls
-ahead of your floor) rather than a fixed percentage. We estimate it by
-Monte Carlo simulation of expected multiplier change per roll, with and
-without the extra de-1'd die, using your live multiplier/floor/dice
-count.
+  - Skill Up!     (+1 Multiplier)
+  - Weighted Die  (+1% high-roll odds)
+  - Fast Hands    (-0.5s Cooldown)
+  - Dice Upgrade / Level Up!, sequenced: player["dice"] gives exact
+    per-die ground truth ({"type": "regular"|"upgraded"}), so we always
+    know the live backlog of currently-owned dice that still show a 1.
+    While that backlog is > 0 and Dice Upgrade is still purchasable,
+    Dice Upgrade is offered solo (fix what you have before adding more).
+    Only once every current die is upgraded (backlog == 0) does buying a
+    new die become safe, so Level Up! then only appears bundled with
+    Dice Upgrade, bought back-to-back as a single unit (priced as the
+    sum of both) so the new die never sits unprotected.
 
-Combo bonuses (poker-style hand on the dice each roll, once you survive
-the 1-check): Three of a Kind +0.5, Full House +1, Straight +2, Four of
-a Kind +3, Five of a Kind +1 current and +1 permanent (raises floor).
-Pair / Two Pair: no bonus.
+All caps (Fast Hands maxRepeat 6x, Weighted Die 30x, Level Up 50x, and
+notably Dice Upgrade's cutoff on how many dice can be de-1'd) are read
+live from each project's own maxRepeat/timesCompleted fields returned by
+the API, never assumed - the Dice Upgrade project can itself become
+unpurchasable below your full dice count (a shop-side cap that's been
+observed to shift), which is exactly why the per-die backlog check needs
+to also confirm Dice Upgrade is actually available, not just that
+backlog exists.
+
+Once the four genuinely cappable upgrades (Fast Hands, Weighted Die,
+Level Up, Dice Upgrade) are all maxed - Skill Up! is uncapped and
+excluded from this check, it can never be "maxed" - the only solo spend
+left is Skill Up!, so from then on auto_roll.py also donates a slice of
+each roll's earnings to the team's current group project (see
+find_group_project / donation_gate_cleared) while the rest keeps
+flowing into savings as before.
 """
 
-import random
-from collections import Counter
+SKILL_UP = "Skill Up!"
+WEIGHTED_DIE = "Weighted Die"
+FAST_HANDS = "Fast Hands"
+LEVEL_UP = "Level Up!"
+DICE_UPGRADE = "Dice Upgrade"
 
-WEIGHTED_DIE_RATE_BONUS = 0.01  # conservative estimate: +1% avg roll value
-DICE_UPGRADE_TRIALS = 20000
+CAPPABLE_UPGRADES = (WEIGHTED_DIE, FAST_HANDS, LEVEL_UP, DICE_UPGRADE)
 
 
 def remaining(p):
@@ -48,139 +52,76 @@ def maxed_out(p):
     return p["maxRepeat"] is not None and p["timesCompleted"] >= p["maxRepeat"]
 
 
-def _combo_bonus(dice_values):
-    """(current_mult_bonus, permanent_mult_bonus) for one roll's dice values (no 1s)."""
-    n = len(dice_values)
-    counts = sorted(Counter(dice_values).values(), reverse=True)
-    is_straight = len(set(dice_values)) == n and (max(dice_values) - min(dice_values) == n - 1) and n >= 5
-
-    if counts[0] == 5:
-        return 1.0, 1.0
-    if n >= 4 and counts[0] == 4:
-        return 3.0, 0.0
-    if is_straight:
-        return 2.0, 0.0
-    if n >= 5 and counts[0] == 3 and len(counts) > 1 and counts[1] == 2:
-        return 1.0, 0.0
-    if counts[0] == 3:
-        return 0.5, 0.0
-    return 0.0, 0.0
+def _find(projects, name):
+    return next((p for p in projects if p["name"] == name), None)
 
 
-def _expected_mult_change_per_roll(n_dice, k_fixed, mult, min_mult, trials=DICE_UPGRADE_TRIALS, seed=0):
+def unupgraded_dice_count(player):
+    """Live backlog: how many of the player's current dice are still 'regular'."""
+    return sum(1 for d in player["dice"] if d.get("type") != "upgraded")
+
+
+def cheapest_candidate(projects, player):
     """
-    Simulates one roll: k_fixed dice can't show 1 (faces 2-6), the rest are
-    normal d6. Returns expected change to *current* multiplier per roll:
-    on bust, multiplier resets to min_mult; on survive, it gains the combo bonus.
+    Returns (cost, label, parts) for the cheapest currently-purchasable
+    candidate, or None if nothing qualifies. `parts` is the list of
+    project dicts to buy, in order (length 1 normally, length 2 for the
+    Level Up + Dice Upgrade bundle).
     """
-    rng = random.Random(seed)
-    risky = n_dice - k_fixed
-    survive_count = 0
-    bonus_sum = 0.0
+    candidates = []
 
-    for _ in range(trials):
-        risky_rolls = [rng.randint(1, 6) for _ in range(risky)]
-        if 1 in risky_rolls:
-            continue
-        survive_count += 1
-        fixed_rolls = [rng.randint(2, 6) for _ in range(k_fixed)]
-        bonus, _perm = _combo_bonus(tuple(risky_rolls + fixed_rolls))
-        bonus_sum += bonus
+    for name in (SKILL_UP, WEIGHTED_DIE, FAST_HANDS):
+        p = _find(projects, name)
+        if p is not None and not maxed_out(p):
+            candidates.append((remaining(p), name, [p]))
 
-    p_survive = survive_count / trials
-    p_bust = 1 - p_survive
-    avg_bonus_given_survive = (bonus_sum / survive_count) if survive_count else 0.0
-    return p_survive * avg_bonus_given_survive + p_bust * (min_mult - mult)
+    dice_upgrade = _find(projects, DICE_UPGRADE)
+    dice_upgrade_available = dice_upgrade is not None and not maxed_out(dice_upgrade)
+    backlog = unupgraded_dice_count(player)
 
-
-def dice_upgrade_rate(player, k_fixed):
-    """
-    Value of buying the next Dice Upgrade (going from k_fixed to k_fixed+1
-    fixed dice). k_fixed should be the project's timesCompleted (the API
-    tracks purchases, not per-die state, but each purchase fixes exactly
-    one more die so the counts line up).
-
-    Pure one-step marginal value understates this upgrade: the real payoff
-    is completing ALL dice, which makes busting impossible and turns your
-    multiplier into an uncapped climb instead of a lossy random walk. A
-    step-by-step ranking would keep underrating early purchases relative
-    to that end state. So this blends two components:
-      - marginal: the immediate one-step improvement (same style as before)
-      - completion: a share of the value of reaching the fully-fixed state
-        from here, weighted toward the *last* remaining purchases (since
-        those are what actually flips you into the uncapped regime)
-    """
-    n_dice = len(player["dice"])
-    mult = player["multiplier"]
-    min_mult = player["minMultiplier"]
-    k_fixed = min(k_fixed, n_dice)
-
-    if n_dice == 0 or k_fixed >= n_dice:
-        return 0.0  # no unfixed dice left to upgrade
-
-    before = _expected_mult_change_per_roll(n_dice, k_fixed, mult, min_mult, seed=1)
-    after = _expected_mult_change_per_roll(n_dice, k_fixed + 1, mult, min_mult, seed=1)
-    fully_fixed = _expected_mult_change_per_roll(n_dice, n_dice, mult, min_mult, seed=1)
-
-    if before <= 0 and after <= 0:
-        marginal = after - before
-    elif before <= 0 < after:
-        marginal = abs(before) + after
+    if backlog > 0:
+        # Existing dice still show a 1 - fix those before adding more.
+        if dice_upgrade_available:
+            candidates.append((remaining(dice_upgrade), DICE_UPGRADE, [dice_upgrade]))
     else:
-        marginal = (after - before) / abs(before) if before != 0 else after
+        # Every current die is already upgraded - safe to add a new one,
+        # paired immediately with upgrading it.
+        level_up = _find(projects, LEVEL_UP)
+        if level_up is not None and dice_upgrade_available and not maxed_out(level_up):
+            bundle_cost = remaining(level_up) + remaining(dice_upgrade)
+            candidates.append((bundle_cost, f"{LEVEL_UP} + {DICE_UPGRADE}", [level_up, dice_upgrade]))
 
-    # How much of the "fully fixed" payoff does this purchase unlock?
-    # remaining_after_this = dice still risky once this purchase lands.
-    # Weight rises as remaining_after_this shrinks, so the last purchase
-    # (remaining_after_this == 0) gets the full completion bonus, and the
-    # first purchase on a high dice count gets very little of it.
-    remaining_after_this = n_dice - (k_fixed + 1)
-    total_unfixed_now = n_dice - k_fixed
-    completion_share = 1 - (remaining_after_this / total_unfixed_now)
-    completion_bonus = max(fully_fixed - before, 0) * completion_share
-
-    return marginal + completion_bonus
+    if not candidates:
+        return None
+    candidates.sort(key=lambda t: t[0])
+    return candidates[0]
 
 
-def rate_multiplier(project, player):
-    """Proportional increase to score-per-second from buying this project once more."""
-    project_name = project["name"]
-    dice_count = len(player["dice"])
-    mult = player["multiplier"]
-    cooldown = player["rollCooldownMs"]
-
-    if project_name == "Level Up!":
-        return (dice_count + 1) / dice_count - 1
-    if project_name == "Skill Up!":
-        return (mult + 1) / mult - 1
-    if project_name == "Fast Hands":
-        new_cooldown = max(cooldown - 500, 500)
-        return cooldown / new_cooldown - 1
-    if project_name == "Weighted Die":
-        return WEIGHTED_DIE_RATE_BONUS
-    if project_name == "Dice Upgrade":
-        return dice_upgrade_rate(player, project["timesCompleted"])
-    return 0.0  # Unlock Skin and anything else: no score-rate effect
-
-
-def rank_projects(projects, player):
+def find_group_project(projects):
     """
-    Returns solo, non-cosmetic, non-maxed projects sorted by value
-    (rate increase per point of remaining cost spent), best first.
-    Dice Upgrade is skipped once timesCompleted reaches your current dice
-    count (no unfixed dice left to buy for).
+    Returns the current active team/collective project, if any. Looked
+    up by type == "group", not by name - the collective goal's name has
+    been observed to change over time, so name matching would silently
+    break. There's at most one live group project at a time (the next
+    tier unlocks once the current one completes).
     """
-    ranked = []
     for p in projects:
-        if p["type"] != "solo" or p["name"] == "Unlock Skin" or maxed_out(p):
-            continue
-        if p["name"] == "Dice Upgrade" and p["timesCompleted"] >= len(player["dice"]):
-            continue
-        cost = remaining(p)
-        if cost <= 0:
-            continue
-        rate = rate_multiplier(p, player)
-        value = rate / cost
-        ranked.append((value, rate, cost, p))
-    ranked.sort(key=lambda t: t[0], reverse=True)
-    return ranked
+        if p.get("type") == "group" and not maxed_out(p):
+            return p
+    return None
+
+
+def donation_gate_cleared(projects):
+    """
+    True once every genuinely cappable solo upgrade (Fast Hands,
+    Weighted Die, Level Up, Dice Upgrade) is maxed out live per the API.
+    Skill Up! is uncapped and deliberately excluded, otherwise this
+    could never fire. Once cleared, Skill Up! is the only solo spend
+    left, so the rest of each roll's earnings can usefully go toward the
+    group project instead of sitting idle.
+    """
+    for name in CAPPABLE_UPGRADES:
+        p = _find(projects, name)
+        if p is None or not maxed_out(p):
+            return False
+    return True

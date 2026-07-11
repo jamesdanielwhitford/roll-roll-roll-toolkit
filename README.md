@@ -61,27 +61,58 @@ Prints a line per roll:
 they update immediately after an auto-buy, so the loop starts rolling
 faster the moment a cooldown upgrade lands, no restart needed.
 
-## Strategy notes (from API inspection)
+## Strategy notes (from API inspection + live play)
 
-Each roll: N dice (upgradeable) summed, multiplied by your multiplier,
-e.g. sum=6, multiplier=2 -> +12 score. Cooldown starts at 6000ms.
+Each roll: N dice (upgradeable) are rolled. **Any single 1 among them
+busts the roll and resets your current multiplier down to your floor
+(`minMultiplier`).** Otherwise the dice sum is multiplied by your
+current multiplier to give your score delta, and a poker-style combo on
+that roll can also bump the multiplier:
+
+| Combo | Bonus |
+|---|---|
+| Pair / Two Pair | none |
+| Three of a Kind | +0.5 multiplier |
+| Full House | +1 multiplier |
+| Straight | +2 multiplier |
+| Four of a Kind | +3 multiplier |
+| Five of a Kind | +1 multiplier, **+1 permanent** (raises your floor) |
+
+Because busting is so costly (it wipes your *current* multiplier, not
+just the last roll's gain), bust probability compounds badly with more
+dice: `P(bust) = 1 - (5/6)^dice`. At 5+ dice you're busting well over
+half the time by default.
 
 Solo projects let you spend your own score as "gold" for permanent
 upgrades:
 
-- **Level Up!** (+1 Die, repeatable up to 50x) — more dice = more score
-  per roll, compounds well.
-- **Skill Up!** (+1 Multiplier, uncapped repeats) — direct multiplier on
-  every roll, very strong long-term.
+- **Level Up!** (+1 Die, repeatable up to 50x) — more dice per roll, but
+  also more bust exposure until you pair it with Dice Upgrade.
+- **Skill Up!** (+1 Multiplier, uncapped repeats) — direct multiplier
+  increase. Note: it's not yet confirmed via testing whether this also
+  raises your floor (`minMultiplier`) or only your current multiplier —
+  the model conservatively assumes the latter.
 - **Fast Hands** (-0.5s cooldown, max 6x) — caps at -3s off the 6s
-  cooldown, up to 2x roll frequency. High value once affordable.
+  cooldown, up to 2x roll frequency.
 - **Weighted Die** (+1% high roll odds, max 30x) — improves average roll
-  value.
+  value. Estimated conservatively; the API doesn't expose the real odds
+  table.
+- **Dice Upgrade** (removes the "1" face from one die, uncapped but
+  practically capped at once per die you own) — this is the highest-
+  leverage upgrade once your multiplier climbs meaningfully above your
+  floor, because every bust then costs more. Removing a die's 1
+  multiplies your survival odds rather than just adding to them, and
+  fully de-1'ing all your dice makes busting impossible, turning your
+  multiplier into an uncapped climb. `advisor.py` models this with a
+  Monte Carlo simulation (not a flat percentage like the others) that
+  also weights each purchase by how close it gets you to full
+  completion, since the last die fixed is worth far more than the first.
 - **Unlock Skin** — cosmetic only, excluded from the value ranking.
 
-`advisor.py` ranks these by estimated score-rate increase per point
-spent, recalculated live off your current dice/multiplier/cooldown so it
-naturally accounts for diminishing returns as you stack upgrades.
+`advisor.py` ranks all of these by estimated score-rate increase per
+point spent, recalculated live off your current dice/multiplier/floor/
+cooldown, so it naturally accounts for diminishing (or, for Dice
+Upgrade, increasing-then-explosive) returns as you stack upgrades.
 
 There's also a **group** project ("Build Foundation") needing a large
 combined team score for a team-wide buff. A single player's rolls won't

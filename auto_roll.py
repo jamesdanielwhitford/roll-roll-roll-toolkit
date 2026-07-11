@@ -46,28 +46,36 @@ def make_logger(log_path):
 
 def try_auto_buy(player, projects, log):
     """
-    Buys the single best-value affordable upgrade, if any. Returns
-    (updated_player, updated_projects) if a purchase happened, else (None, None).
+    Saves toward and buys only the single best-value upgrade (rank #1),
+    never a cheaper lower-value one, even if that's affordable sooner.
+    Score has no other use in this game, so letting it sit idle while
+    saving for the best upgrade costs nothing - it's simply deferred.
+    Returns (updated_player, updated_projects) if a purchase happened,
+    else (None, None).
     """
     ranked = rank_projects(projects, player)
-    for value, rate, cost, p in ranked:
-        if cost <= player["score"]:
-            msg = f"[auto-buy] {p['name']} for {cost:.0f} score (+{rate*100:.2f}% rate)"
-            print(msg)
-            log(msg)
-            try:
-                _, resp = contribute(p["id"], cost)
-            except RollAPIError as e:
-                err = f"[auto-buy] failed: {e}"
-                print(err)
-                log(err)
-                return None, None
-            # Real response shape: {player, projects, clientMessages: [{type, player, projects}]}
-            return resp["player"], resp["projects"]
-    return None, None
+    if not ranked:
+        return None, None
+
+    value, rate, cost, p = ranked[0]
+    if cost > player["score"]:
+        return None, None  # still saving up for the best upgrade
+
+    msg = f"[auto-buy] {p['name']} for {cost:.0f} score (+{rate*100:.2f}% rate)"
+    print(msg)
+    log(msg)
+    try:
+        _, resp = contribute(p["id"], cost)
+    except RollAPIError as e:
+        err = f"[auto-buy] failed: {e}"
+        print(err)
+        log(err)
+        return None, None
+    # Real response shape: {player, projects, clientMessages: [{type, player, projects}]}
+    return resp["player"], resp["projects"]
 
 
-def do_roll(state, log):
+def do_roll(state, log, projects=None):
     try:
         status, data = roll()
     except RollAPIError as e:
@@ -108,6 +116,13 @@ def do_roll(state, log):
             f"dice={len(player['dice'])} cooldown={player['rollCooldownMs']}ms [{tag}] "
             f"| session: +{stats['total_score_gained']:g} in {elapsed:.0f}s ({rate:.0f}/min)"
         )
+        if projects:
+            ranked = rank_projects(projects, player)
+            if ranked:
+                _, _, top_cost, top_p = ranked[0]
+                remaining_cost = max(top_cost - player["score"], 0)
+                if remaining_cost > 0:
+                    msg += f" | saving for {top_p['name']}: {player['score']:g}/{top_cost:.0f}"
         print(msg)
         log(msg)
         return player["nextRollTime"], player
@@ -158,7 +173,7 @@ def main():
             if wait_ms > 0:
                 time.sleep(wait_ms / 1000)
 
-        next_roll_time, rolled_player = do_roll(state, log)
+        next_roll_time, rolled_player = do_roll(state, log, projects if args.auto_buy else None)
         rolls_done += 1
 
         if rolled_player is not None:

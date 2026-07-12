@@ -51,7 +51,7 @@ def make_logger(log_path):
     return log
 
 
-def try_auto_buy(player, projects, log, only_upgrade=None):
+def try_auto_buy(player, projects, log, only_upgrade=None, exclude_upgrades=None):
     """
     Saves toward and buys whichever of the four candidates (Skill Up,
     Weighted Die, Fast Hands, or the Level Up + Dice Upgrade bundle) is
@@ -64,13 +64,18 @@ def try_auto_buy(player, projects, log, only_upgrade=None):
     and repeatedly buys just that one, ignoring every other candidate
     and all bundling/sequencing logic.
 
+    If `exclude_upgrades` is set instead, those project names are
+    dropped from the cheapest-first candidate pool (see
+    advisor.cheapest_candidate's exclude_names) - everything else still
+    competes on cost as normal.
+
     Returns (updated_player, updated_projects) if a purchase happened,
     else (None, None).
     """
     if only_upgrade is not None:
         candidate = single_upgrade_candidate(projects, only_upgrade)
     else:
-        candidate = cheapest_candidate(projects, player)
+        candidate = cheapest_candidate(projects, player, exclude_upgrades)
     if candidate is None:
         return None, None
 
@@ -151,8 +156,8 @@ def init_with_retry(log):
         time.sleep(RETRY_BACKOFF_S)
 
 
-def do_roll(state, log, projects=None, only_upgrade=None):
-    time.sleep(random.uniform(0.5, 1.0))
+def do_roll(state, log, projects=None, only_upgrade=None, exclude_upgrades=None):
+    time.sleep(random.uniform(0.1, 0.3))
     try:
         status, data = roll()
     except RollAPIError as e:
@@ -202,7 +207,7 @@ def do_roll(state, log, projects=None, only_upgrade=None):
             if only_upgrade is not None:
                 candidate = single_upgrade_candidate(projects, only_upgrade)
             else:
-                candidate = cheapest_candidate(projects, player)
+                candidate = cheapest_candidate(projects, player, exclude_upgrades)
             if candidate is not None:
                 top_cost, top_label, _ = candidate
                 remaining_cost = max(top_cost - player["score"], 0)
@@ -228,6 +233,11 @@ def main():
                          help="with --auto-buy, restrict purchases to the single project whose "
                               "name contains NAME (case-insensitive, e.g. 'fast', 'dice', 'skill'), "
                               "instead of the cheapest-first strategy")
+    parser.add_argument("--exclude-upgrade", metavar="NAME", action="append", default=None,
+                         help="with --auto-buy, drop any project whose name contains NAME "
+                              "(case-insensitive, e.g. 'skill') from the cheapest-first candidate "
+                              "pool. Repeatable to exclude more than one. Not combinable with "
+                              "--only-upgrade")
     parser.add_argument("--donate-pct", type=float, default=25.0,
                          help="percent of each roll's score gain to donate to the team's current "
                               "group project, once every cappable solo upgrade is maxed out "
@@ -236,6 +246,10 @@ def main():
     args = parser.parse_args()
     if args.only_upgrade is not None and not args.auto_buy:
         parser.error("--only-upgrade requires --auto-buy")
+    if args.exclude_upgrade is not None and not args.auto_buy:
+        parser.error("--exclude-upgrade requires --auto-buy")
+    if args.only_upgrade is not None and args.exclude_upgrade is not None:
+        parser.error("--only-upgrade and --exclude-upgrade are not combinable")
     require_user_id()
 
     log = make_logger(args.log)
@@ -254,9 +268,18 @@ def main():
         print(f"[error] no project matches --only-upgrade '{args.only_upgrade}'. Available: {names}")
         sys.exit(1)
 
+    if args.exclude_upgrade is not None:
+        for name_query in args.exclude_upgrade:
+            if find_by_name(projects, name_query) is None:
+                names = ", ".join(p["name"] for p in projects)
+                print(f"[error] no project matches --exclude-upgrade '{name_query}'. Available: {names}")
+                sys.exit(1)
+
     start_msg = f"Starting auto-roll for {player['userName']} ({player['userId']}), score={player['score']}, auto_buy={args.auto_buy}"
     if args.only_upgrade is not None:
         start_msg += f", only_upgrade={args.only_upgrade!r}"
+    if args.exclude_upgrade is not None:
+        start_msg += f", exclude_upgrade={args.exclude_upgrade!r}"
     print(start_msg)
     log(start_msg)
 
@@ -277,7 +300,7 @@ def main():
                 time.sleep(wait_ms / 1000)
 
         next_roll_time, rolled_player, delta = do_roll(
-            state, log, projects if args.auto_buy else None, args.only_upgrade
+            state, log, projects if args.auto_buy else None, args.only_upgrade, args.exclude_upgrade
         )
         rolls_done += 1
 
@@ -294,7 +317,9 @@ def main():
                 next_roll_time = player.get("nextRollTime", next_roll_time)
 
         if args.auto_buy and player is not None:
-            bought_player, bought_projects = try_auto_buy(player, projects, log, args.only_upgrade)
+            bought_player, bought_projects = try_auto_buy(
+                player, projects, log, args.only_upgrade, args.exclude_upgrade
+            )
             if bought_player is not None:
                 player = bought_player
                 projects = bought_projects

@@ -100,22 +100,39 @@ def single_upgrade_candidate(projects, name_query):
     return (remaining(p), p["name"], [p])
 
 
-def cheapest_candidate(projects, player):
+def _excluded(name, exclude_queries):
+    name_lower = name.lower()
+    return any(q.lower() in name_lower for q in exclude_queries)
+
+
+def cheapest_candidate(projects, player, exclude_names=None):
     """
     Returns (cost, label, parts) for the cheapest currently-purchasable
     candidate, or None if nothing qualifies. `parts` is the list of
     project dicts to buy, in order (length 1 normally, length 2 for the
     Level Up + Dice Upgrade bundle).
+
+    `exclude_names`, if given, is a list of case-insensitive substrings
+    (see find_by_name) - any project whose name matches one of them is
+    dropped from consideration entirely, including from the Level Up +
+    Dice Upgrade bundle (excluding either half drops the whole bundle,
+    since it's only ever bought as a unit).
     """
+    exclude_names = exclude_names or []
     candidates = []
 
     for name in (SKILL_UP, WEIGHTED_DIE, FAST_HANDS):
+        if _excluded(name, exclude_names):
+            continue
         p = _find(projects, name)
         if p is not None and not maxed_out(p):
             candidates.append((remaining(p), name, [p]))
 
     dice_upgrade = _find(projects, DICE_UPGRADE)
-    dice_upgrade_available = dice_upgrade is not None and not maxed_out(dice_upgrade)
+    dice_upgrade_excluded = _excluded(DICE_UPGRADE, exclude_names)
+    dice_upgrade_available = (
+        dice_upgrade is not None and not maxed_out(dice_upgrade) and not dice_upgrade_excluded
+    )
     backlog = unupgraded_dice_count(player)
 
     if backlog > 0:
@@ -126,7 +143,12 @@ def cheapest_candidate(projects, player):
         # Every current die is already upgraded - safe to add a new one,
         # paired immediately with upgrading it.
         level_up = _find(projects, LEVEL_UP)
-        if level_up is not None and dice_upgrade_available and not maxed_out(level_up):
+        if (
+            level_up is not None
+            and dice_upgrade_available
+            and not maxed_out(level_up)
+            and not _excluded(LEVEL_UP, exclude_names)
+        ):
             bundle_cost = remaining(level_up) + remaining(dice_upgrade)
             candidates.append((bundle_cost, f"{LEVEL_UP} + {DICE_UPGRADE}", [level_up, dice_upgrade]))
 
@@ -135,7 +157,7 @@ def cheapest_candidate(projects, player):
     # still gets bought on the same cheapest-first rule as Skill Up! /
     # Weighted Die / Fast Hands, so new upgrades aren't silently ignored.
     for p in projects:
-        if p["name"] not in KNOWN_UPGRADES and not maxed_out(p):
+        if p["name"] not in KNOWN_UPGRADES and not maxed_out(p) and not _excluded(p["name"], exclude_names):
             candidates.append((remaining(p), p["name"], [p]))
 
     if not candidates:

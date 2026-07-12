@@ -36,10 +36,13 @@ other's stats.
 - `auto_roll.py` — rolls shortly after your cooldown expires (a random
   0.5-1s delay is added before each roll), forever (or `--max-rolls N` /
   `--duration SECONDS`). Add `--auto-buy` to also spend score on the
-  cheapest available upgrade after every roll, `--donate-pct PCT`
-  (default 25) to donate a slice of earnings to the team's group project
-  once every cappable solo upgrade is maxed, and `--log FILE` to save a
-  timestamped history.
+  cheapest available upgrade after every roll, `--only-upgrade NAME`
+  (requires `--auto-buy`) to restrict purchases to a single project
+  matched by a case-insensitive substring of its name (e.g. `fast`,
+  `dice`, `skill`) instead of the cheapest-first strategy,
+  `--donate-pct PCT` (default 25) to donate a slice of earnings to the
+  team's group project once every cappable solo upgrade is maxed, and
+  `--log FILE` to save a timestamped history.
 - `upgrades.py` — shows solo project progress and the cheapest available
   buy. Manually buy one with `--contribute "Skill Up" --amount 500`.
 - `stats.py` — prints session stats (rolls, score gained, rolls/min).

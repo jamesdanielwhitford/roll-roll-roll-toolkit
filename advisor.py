@@ -33,6 +33,15 @@ left is Skill Up!, so from then on auto_roll.py also donates a slice of
 each roll's earnings to the team's current group project (see
 find_group_project / donation_gate_cleared) while the rest keeps
 flowing into savings as before.
+
+Any solo project whose name isn't one of the five above (e.g. a new
+upgrade type the game adds later) isn't silently dropped: it's still
+offered as a buy candidate on the same cheapest-remaining-cost rule as
+Skill Up! / Weighted Die / Fast Hands, just without any hand-tuned
+value judgment or sequencing. It's also excluded from
+donation_gate_cleared's cap check, since we don't know if it's even
+cappable - treating an unrecognized project as "must be maxed" could
+block the donation gate forever if it turns out to be uncapped.
 """
 
 SKILL_UP = "Skill Up!"
@@ -42,6 +51,11 @@ LEVEL_UP = "Level Up!"
 DICE_UPGRADE = "Dice Upgrade"
 
 CAPPABLE_UPGRADES = (WEIGHTED_DIE, FAST_HANDS, LEVEL_UP, DICE_UPGRADE)
+
+# Every solo project name this module has an opinion about, either as a
+# standalone buy candidate or as part of the Level Up + Dice Upgrade
+# bundle/sequencing logic.
+KNOWN_UPGRADES = (SKILL_UP, WEIGHTED_DIE, FAST_HANDS, LEVEL_UP, DICE_UPGRADE)
 
 
 def remaining(p):
@@ -59,6 +73,31 @@ def _find(projects, name):
 def unupgraded_dice_count(player):
     """Live backlog: how many of the player's current dice are still 'regular'."""
     return sum(1 for d in player["dice"] if d.get("type") != "upgraded")
+
+
+def find_by_name(projects, name_query):
+    """
+    Case-insensitive substring match against project names, e.g. "fast"
+    matches "Fast Hands". Returns the matching project dict, or None if
+    no project name contains the query.
+    """
+    query = name_query.lower()
+    return next((p for p in projects if query in p["name"].lower()), None)
+
+
+def single_upgrade_candidate(projects, name_query):
+    """
+    Like cheapest_candidate, but restricted to one project chosen by
+    name (see find_by_name) instead of picking the cheapest across all
+    of them. No bundling/sequencing logic applies - even Dice Upgrade or
+    Level Up! bought this way is a single-project purchase, never paired.
+    Returns (cost, label, parts) or None if the name doesn't match any
+    project or the match is already maxed out.
+    """
+    p = find_by_name(projects, name_query)
+    if p is None or maxed_out(p):
+        return None
+    return (remaining(p), p["name"], [p])
 
 
 def cheapest_candidate(projects, player):
@@ -90,6 +129,14 @@ def cheapest_candidate(projects, player):
         if level_up is not None and dice_upgrade_available and not maxed_out(level_up):
             bundle_cost = remaining(level_up) + remaining(dice_upgrade)
             candidates.append((bundle_cost, f"{LEVEL_UP} + {DICE_UPGRADE}", [level_up, dice_upgrade]))
+
+    # Any solo project we don't have specific value/sequencing logic for
+    # (e.g. a new upgrade type added to the game after this was written)
+    # still gets bought on the same cheapest-first rule as Skill Up! /
+    # Weighted Die / Fast Hands, so new upgrades aren't silently ignored.
+    for p in projects:
+        if p["name"] not in KNOWN_UPGRADES and not maxed_out(p):
+            candidates.append((remaining(p), p["name"], [p]))
 
     if not candidates:
         return None
